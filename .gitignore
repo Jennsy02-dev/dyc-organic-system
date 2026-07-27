@@ -1,0 +1,14 @@
+# Dependencias y construcciones
+node_modules/
+dist/
+.next/
+out/
+
+# Variables de entorno secretas (no subir a GitHub)
+.env
+.env.local
+.env.production
+
+# Archivos de sistema y logs
+*.log
+.DS_Store
