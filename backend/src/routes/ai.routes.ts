@@ -3,6 +3,7 @@ import { handleHairDiagnosis } from '../controllers/ai.controller.js';
 
 const router = Router();
 
-router.post('/diagnosis', handleHairDiagnosis);
+// Cambiado de /diagnosis a /diagnostic
+router.post('/diagnostic', handleHairDiagnosis);
 
 export default router;

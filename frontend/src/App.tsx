@@ -5,7 +5,7 @@ interface DiagnosticResult {
   productosRecomendados: string[];
 }
 
-// URL pública de tu backend en GitHub Codespaces (Puerto 4000)
+// URL pública del backend en GitHub Codespaces (Puerto 4000)
 const BACKEND_URL = 'https://fluffy-journey-jr4rvjg44g9gcj7qp-4000.app.github.dev';
 
 export default function App() {
@@ -23,7 +23,8 @@ export default function App() {
     setResult(null);
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/diagnostic`, {
+      // Se añade /v1/ai para que coincida con las rutas declaradas en app.ts
+      const response = await fetch(`${BACKEND_URL}/api/v1/ai/diagnostic`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
