@@ -1,38 +1,31 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+/**
+ * chatbot.service.ts - Lógica de procesamiento de mensajes para D' Y&C ORGANIC
+ */
 
-// Inicializamos la API
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+export class ChatbotService {
+  public static async processMessage(userMessage: string): Promise<string> {
+    const lower = userMessage.toLowerCase().trim();
 
-// Inicializamos el modelo con las instrucciones del sistema para la asesora
-const model = genAI.getGenerativeModel({
-  model: 'gemini-1.5-flash',
-  systemInstruction: `
-    Eres Yoly, la asesora virtual de "D' Y&C ORGANIC". 
-    Tu objetivo es responder dudas sobre cosmética capilar orgánica, dar recomendaciones amables y personalizadas, 
-    y ayudar a los clientes con información de nuestros productos 100% naturales. 
-    Mantén un tono cálido, profesional y empático.
-  `,
-});
+    if (lower.includes('envio') || lower.includes('envío') || lower.includes('entrega') || lower.includes('costo')) {
+      return "🚚 Realizamos envíos a todo el país (República Dominicana). Los detalles y costos exactos del envío los coordinamos directamente contigo al finalizar tu pedido por WhatsApp.";
+    }
 
-export const getChatbotResponse = async (userMessage: string, history: { role: string; content: string }[] = []) => {
-  try {
-    // Formateamos el historial al formato que espera Gemini SDK (user / model)
-    const formattedHistory = history.map((msg) => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }],
-    }));
+    if (lower.includes('ingrediente') || lower.includes('quimico') || lower.includes('químico') || lower.includes('sulfato') || lower.includes('parabeno')) {
+      return "🌱 Todos nuestros productos son 100% orgánicos, libres de sulfatos, sal, parabenos y químicos agresivos, diseñados para cuidar la salud de tu hebra capilar y piel.";
+    }
 
-    // Iniciamos la sesión de chat con el historial
-    const chat = model.startChat({
-      history: formattedHistory,
-    });
+    if (lower.includes('jabon') || lower.includes('jabón') || lower.includes('piel') || lower.includes('cara')) {
+      return "🧼 Contamos con jabones artesanales de Avena & Miel y de Coco & Karité, ideales para hidratar y exfoliar pieles delicadas o sensibles.";
+    }
 
-    const result = await chat.sendMessage(userMessage);
-    const response = await result.response;
+    if (lower.includes('diagnostico') || lower.includes('diagnóstico') || lower.includes('recomendacion') || lower.includes('ia')) {
+      return "✨ Puedes ir a la pestaña 'Diagnóstico IA' en el menú principal para recibir una rutina capilar recomendada por nuestra IA según tu tipo de cabello.";
+    }
 
-    return response.text();
-  } catch (error) {
-    console.error('Error en el servicio del chatbot:', error);
-    throw new Error('No se pudo procesar la respuesta de la asesora virtual.');
+    if (lower.includes('horario') || lower.includes('donde') || lower.includes('dónde') || lower.includes('ubicacion')) {
+      return "📍 Operamos desde República Dominicana. Puedes realizar tus pedidos por nuestra web las 24 horas y te atendemos vía WhatsApp para coordinar la entrega.";
+    }
+
+    return "Gracias por tu mensaje 🌿. Si deseas realizar un pedido o necesitas atención personalizada inmediata, puedes presionar el botón de WhatsApp en tu carrito de compras.";
   }
-};
+}
