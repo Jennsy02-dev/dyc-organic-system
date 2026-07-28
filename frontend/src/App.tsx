@@ -12,7 +12,7 @@ export default function App() {
 
   // Estado para el Chatbot
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([
-    { role: 'model', content: "¡Hola! Soy Yoly, tu asesora capilar orgánica de D' Y&C ORGANIC. ¿En qué te puedo ayudar hoy?" }
+    { role: 'model', content: "¡Hola! Soy  Y&C , tu asesora capilar orgánica de D' Y&C ORGANIC. ¿En qué te puedo ayudar hoy?" }
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [loadingChat, setLoadingChat] = useState(false);
