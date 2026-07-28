@@ -1,26 +1,48 @@
 import React, { useState } from 'react';
 
+interface DiagnosticResult {
+  recomendacion: string;
+  productosRecomendados: string[];
+}
+
+// URL pública de tu backend en GitHub Codespaces (Puerto 4000)
+const BACKEND_URL = 'https://fluffy-journey-jr4rvjg44g9gcj7qp-4000.app.github.dev';
+
 export default function App() {
   const [hairType, setHairType] = useState('Rizado');
   const [scalpCondition, setScalpCondition] = useState('Seco');
-  const [mainProblem, setMainProblem] = useState('Frizz');
-  const [diagnosis, setDiagnosis] = useState('');
+  const [mainIssue, setMainIssue] = useState('Frizz');
   const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<DiagnosticResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
+    setError(null);
+    setResult(null);
+
     try {
-      const res = await fetch('http://localhost:4000/api/ai/diagnosis', {
+      const response = await fetch(`${BACKEND_URL}/api/diagnostic`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hairType, scalpCondition, mainProblem }),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          hairType,
+          scalpCondition,
+          mainIssue,
+        }),
       });
-      const data = await res.json();
-      setDiagnosis(data.diagnosis || data.reply || 'Diagnóstico listo.');
-    } catch (error) {
-      console.error(error);
-      setDiagnosis('Error al conectar con el backend.');
+
+      if (!response.ok) {
+        throw new Error('Error al conectar con el servidor.');
+      }
+
+      const data = await response.json();
+      setResult(data);
+    } catch (err: any) {
+      setError(err.message || 'Ocurrió un error inesperado');
     } finally {
       setLoading(false);
     }
@@ -28,21 +50,29 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 p-8 font-sans">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-green-800">D' Y&C ORGANIC</h1>
-        <p className="text-gray-600">Cuidado Capilar 100% Orgánico y Personalizado</p>
+      <header className="max-w-xl mx-auto mb-6">
+        <h1 className="text-3xl font-extrabold text-emerald-900 tracking-wide">
+          D' Y&C ORGANIC
+        </h1>
+        <p className="text-emerald-700 text-sm font-medium">
+          Cuidado Capilar 100% Orgánico y Personalizado
+        </p>
       </header>
 
-      <main className="max-w-2xl bg-white p-6 rounded-xl shadow-md">
-        <h2 className="text-xl font-semibold mb-4 text-gray-800">Análisis Personalizado de Cabello</h2>
-        
+      <main className="max-w-xl mx-auto bg-white rounded-xl shadow-md p-6 border border-gray-100">
+        <h2 className="text-xl font-bold text-gray-800 mb-4">
+          Análisis Personalizado de Cabello
+        </h2>
+
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Tipo de Cabello</label>
-            <select 
-              value={hairType} 
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
+              Tipo de Cabello
+            </label>
+            <select
+              value={hairType}
               onChange={(e) => setHairType(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 border p-2"
+              className="w-full p-2.5 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
             >
               <option value="Rizado">Rizado</option>
               <option value="Liso">Liso</option>
@@ -52,11 +82,13 @@ export default function App() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Estado del Cuero Cabelludo</label>
-            <select 
-              value={scalpCondition} 
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
+              Estado del Cuero Cabelludo
+            </label>
+            <select
+              value={scalpCondition}
               onChange={(e) => setScalpCondition(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 border p-2"
+              className="w-full p-2.5 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
             >
               <option value="Seco">Seco</option>
               <option value="Graso">Graso</option>
@@ -66,28 +98,52 @@ export default function App() {
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">Problema Principal</label>
-            <input 
-              type="text" 
-              value={mainProblem} 
-              onChange={(e) => setMainProblem(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 border p-2"
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">
+              Problema Principal
+            </label>
+            <input
+              type="text"
+              value={mainIssue}
+              onChange={(e) => setMainIssue(e.target.value)}
+              className="w-full p-2.5 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+              placeholder="Ej. Frizz, Caída, Caspa..."
+              required
             />
           </div>
 
-          <button 
-            type="submit" 
+          <button
+            type="submit"
             disabled={loading}
-            className="w-full bg-green-700 text-white py-2 px-4 rounded-md hover:bg-green-800 transition"
+            className="w-full bg-emerald-800 hover:bg-emerald-900 text-white font-medium py-2.5 px-4 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
           >
-            {loading ? 'Consultando...' : 'Obtener Diagnóstico Orgánico'}
+            {loading ? 'Generando Diagnóstico...' : 'Obtener Diagnóstico Orgánico'}
           </button>
         </form>
 
-        {diagnosis && (
-          <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-md">
-            <h3 className="font-bold text-green-900 mb-2">Resultado:</h3>
-            <p className="whitespace-pre-line text-gray-800">{diagnosis}</p>
+        {error && (
+          <div className="mt-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg">
+            {error}
+          </div>
+        )}
+
+        {result && (
+          <div className="mt-6 p-4 bg-emerald-50 border border-emerald-200 rounded-lg space-y-3">
+            <h3 className="font-bold text-emerald-900 text-lg">
+              Diagnóstico Recomendado
+            </h3>
+            <p className="text-gray-700 text-sm">{result.recomendacion}</p>
+            {result.productosRecomendados && (
+              <div>
+                <span className="font-semibold text-emerald-800 text-xs uppercase block mb-1">
+                  Productos Sugeridos:
+                </span>
+                <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
+                  {result.productosRecomendados.map((prod, idx) => (
+                    <li key={idx}>{prod}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </main>
