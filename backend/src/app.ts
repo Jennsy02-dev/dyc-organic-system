@@ -6,7 +6,14 @@ import chatbotRoutes from './routes/chatbot.routes.js';
 const app: Application = express();
 
 // Middlewares
-app.use(cors());
+// Se habilita credentials y origin: true para permitir peticiones autenticadas desde Codespaces
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+  })
+);
+
 app.use(express.json());
 
 // Rutas

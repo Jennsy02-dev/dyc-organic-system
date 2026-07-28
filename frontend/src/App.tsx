@@ -23,12 +23,12 @@ export default function App() {
     setResult(null);
 
     try {
-      // Se añade /v1/ai para que coincida con las rutas declaradas en app.ts
       const response = await fetch(`${BACKEND_URL}/api/v1/ai/diagnostic`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include', // Necesario para la autenticación de cookies en Codespaces
         body: JSON.stringify({
           hairType,
           scalpCondition,
