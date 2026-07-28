@@ -1,6 +1,10 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+// Inicializamos el SDK oficial con la API Key
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+
+// Obtenemos el modelo
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
 export const generateHairDiagnosis = async (hairType: string, scalpCondition: string, mainProblem: string) => {
   try {
@@ -15,12 +19,11 @@ export const generateHairDiagnosis = async (hairType: string, scalpCondition: st
       Genera una rutina capilar recomendada usando productos 100% orgánicos.
     `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
+    // Con el SDK oficial se llama a generateContent directamente sobre la instancia del modelo
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
 
-    return response.text;
+    return response.text();
   } catch (error) {
     console.error('Error al consultar la IA:', error);
     throw new Error('No se pudo generar el diagnóstico capilar.');
