@@ -1,9 +1,9 @@
 /**
- * App.tsx - Componente Principal de D' Y&C ORGANIC (Versión Full Features)
+ * App.tsx - Componente Principal de D' Y&C ORGANIC (Versión Full Features Corregida)
  */
 
-import React, { useState, useEffect } from 'react';
-import Chatbot from './components/Chatbot'; 
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import Chatbot from './components/Chatbot';
 
 // ==========================================
 // 1. INTERFACES & DEFINICIÓN DE TIPOS
@@ -19,6 +19,15 @@ interface Product {
   icon: string;
   ingredients?: string[];
   benefits?: string[];
+  stock?: number;
+}
+
+interface CheckoutForm {
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  city: string;
 }
 
 interface CartItem {
@@ -48,8 +57,18 @@ interface FAQItem {
 // 2. CONFIGURACIÓN GENERAL Y CONSTANTES
 // ==========================================
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://fluffy-journey-jr4rvjg44g9gcj7qp-4000.app.github.dev';
-const WHATSAPP_NUMBER = '18090000000'; 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL as string | undefined;
+const WHATSAPP_NUMBER = import.meta.env.VITE_WHATSAPP_NUMBER || '18090000000';
+
+const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD || '';
+const ADMIN_SESSION_KEY = 'dyc_admin_authed_v1';
+
+const CURRENCY_FORMATTER = new Intl.NumberFormat('es-DO', {
+  style: 'currency',
+  currency: 'USD',
+});
+
+const formatPrice = (value: number) => CURRENCY_FORMATTER.format(value);
 
 const PRODUCTS: Product[] = [
   {
@@ -82,7 +101,8 @@ const PRODUCTS: Product[] = [
     badge: "Recomendado IA",
     icon: "💧",
     ingredients: ["Minoxidil Botánico", "Cebolla Morada Extracto", "Jengibre", "Canela"],
-    benefits: ["Detiene la caída excesiva", "Promueve nuevo crecimiento", "Activa la circulación capilar"]
+    benefits: ["Detiene la caída excesiva", "Promueve nuevo crecimiento", "Activa la circulación capilar"],
+    stock: 4
   },
   {
     id: 4,
@@ -129,28 +149,71 @@ const FAQS: FAQItem[] = [
   { question: "¿Cómo sé cuál producto elegir?", answer: "Puedes utilizar nuestra herramienta gratuita de 'Diagnóstico IA' en el menú para obtener una recomendación totalmente personalizada a tu tipo de cabello." }
 ];
 
+const HAIR_ISSUES = ['Frizz', 'Caída', 'Falta de Brillo', 'Resequedad', 'Puntas Abiertas', 'Caspa'];
+
+const CART_STORAGE_KEY = 'dyc_cart_v1';
+const FAVORITES_STORAGE_KEY = 'dyc_favorites_v1';
+const PRODUCTS_STORAGE_KEY = 'dyc_admin_products_v1';
+const NEWSLETTER_STORAGE_KEY = 'dyc_newsletter_subscribers_v1';
+
+let nextLocalProductId = 1000;
+
 // ==========================================
-// 3. COMPONENTE PRINCIPAL (App)
+// 3. HELPERS DE ALMACENAMIENTO LOCAL
+// ==========================================
+
+function loadFromStorage<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveToStorage<T>(key: string, value: T) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignorar si localStorage no está disponible
+  }
+}
+
+// ==========================================
+// 4. COMPONENTE PRINCIPAL (App)
 // ==========================================
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'tienda' | 'diagnostico' | 'nosotros'>('tienda');
+  const [activeTab, setActiveTab] = useState<'tienda' | 'diagnostico' | 'nosotros' | 'admin'>('tienda');
   const [filter, setFilter] = useState<'todos' | 'capilar' | 'jabones'>('todos');
   const [searchTerm, setSearchTerm] = useState<string>('');
 
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [products, setProducts] = useState<Product[]>(() => loadFromStorage(PRODUCTS_STORAGE_KEY, PRODUCTS));
+
+  const [isCheckoutOpen, setIsCheckoutOpen] = useState<boolean>(false);
+  const [checkoutForm, setCheckoutForm] = useState<CheckoutForm>({ name: '', email: '', phone: '', address: '', city: '' });
+  const [checkoutLoading, setCheckoutLoading] = useState<boolean>(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  const [newsletterEmail, setNewsletterEmail] = useState<string>('');
+  const [newsletterStatus, setNewsletterStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+
+  const [isAdminAuthed, setIsAdminAuthed] = useState<boolean>(() => loadFromStorage(ADMIN_SESSION_KEY, false));
+  const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
+  const [adminError, setAdminError] = useState<string | null>(null);
+
+  const [cart, setCart] = useState<CartItem[]>(() => loadFromStorage(CART_STORAGE_KEY, []));
   const [isCartOpen, setIsCartOpen] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Estados de Favoritos (Wishlist)
-  const [favorites, setFavorites] = useState<number[]>([]);
+  const [favorites, setFavorites] = useState<number[]>(() => loadFromStorage(FAVORITES_STORAGE_KEY, []));
   const [showOnlyFavorites, setShowOnlyFavorites] = useState<boolean>(false);
 
-  // Estado Modal Vista Rápida de Producto
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const lastFocusedElement = useRef<HTMLElement | null>(null);
 
-  // Estado Acordeón FAQ
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(null);
 
   const [step, setStep] = useState<number>(1);
@@ -162,29 +225,67 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (isCartOpen || selectedProduct) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'unset';
+    saveToStorage(CART_STORAGE_KEY, cart);
+  }, [cart]);
+
+  useEffect(() => {
+    saveToStorage(FAVORITES_STORAGE_KEY, favorites);
+  }, [favorites]);
+
+  useEffect(() => {
+    saveToStorage(PRODUCTS_STORAGE_KEY, products);
+  }, [products]);
+
+  useEffect(() => {
+    saveToStorage(ADMIN_SESSION_KEY, isAdminAuthed);
+  }, [isAdminAuthed]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const productId = params.get('producto');
+    if (productId) {
+      const found = products.find((p) => p.id === Number(productId));
+      if (found) setSelectedProduct(found);
     }
+  }, [products]);
+
+  useEffect(() => {
+    document.body.style.overflow = (isCartOpen || selectedProduct) ? 'hidden' : 'unset';
   }, [isCartOpen, selectedProduct]);
 
-  const showToast = (msg: string) => {
+  useEffect(() => {
+    if (!isCartOpen && !selectedProduct) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsCartOpen(false);
+        setSelectedProduct(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isCartOpen, selectedProduct]);
+
+  const showToast = useCallback((msg: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastMessage(msg);
-    setTimeout(() => {
-      setToastMessage(null);
-    }, 3000);
-  };
+    toastTimeoutRef.current = setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
 
   const toggleFavorite = (productId: number) => {
     setFavorites((prev) => {
       if (prev.includes(productId)) {
         showToast("Removido de favoritos");
         return prev.filter((id) => id !== productId);
-      } else {
-        showToast("¡Añadido a tus favoritos! ❤️");
-        return [...prev, productId];
       }
+      showToast("¡Añadido a tus favoritos! ❤️");
+      return [...prev, productId];
     });
   };
 
@@ -201,6 +302,10 @@ export default function App() {
       return [...prev, { product, quantity }];
     });
     showToast(`¡Agregado: ${product.name} (x${quantity})!`);
+  };
+
+  const addToCartFromModal = (product: Product, quantity: number = 1) => {
+    addToCart(product, quantity);
     setSelectedProduct(null);
   };
 
@@ -218,38 +323,190 @@ export default function App() {
           }
           return item;
         })
-        .filter(Boolean) as CartItem[]
+        .filter((item): item is CartItem => item !== null)
     );
   };
 
   const totalCartItems = cart.reduce((sum, item) => sum + item.quantity, 0);
   const totalPrice = cart.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
 
+  const openProductModal = (product: Product, element?: HTMLElement | null) => {
+    if (element) lastFocusedElement.current = element;
+    setSelectedProduct(product);
+    const url = new URL(window.location.href);
+    url.searchParams.set('producto', String(product.id));
+    window.history.pushState({}, '', url);
+    document.title = `${product.name} | D' Y&C ORGANIC`;
+  };
+
+  const closeProductModal = () => {
+    setSelectedProduct(null);
+    lastFocusedElement.current?.focus?.();
+    const url = new URL(window.location.href);
+    url.searchParams.delete('producto');
+    window.history.pushState({}, '', url);
+    document.title = "D' Y&C ORGANIC";
+  };
+
   const sendWhatsAppOrder = () => {
     if (cart.length === 0) return;
 
     let text = "🌿 *¡Hola D' Y&C ORGANIC! Quiero realizar el siguiente pedido:*\n\n";
     cart.forEach((item) => {
-      text += `• ${item.product.name} (x${item.quantity}) - $${(item.product.price * item.quantity).toFixed(2)}\n`;
+      text += `• ${item.product.name} (x${item.quantity}) - ${formatPrice(item.product.price * item.quantity)}\n`;
     });
-    text += `\n💰 *Total a pagar:* $${totalPrice.toFixed(2)}\n\n`;
+    text += `\n💰 *Total a pagar:* ${formatPrice(totalPrice)}\n\n`;
     text += "Quedo a la espera de sus datos para coordinar el pago y envío. ¡Gracias!";
 
     const encodedText = encodeURIComponent(text);
-    window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodedText}`, '_blank');
+    window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodedText}`, '_blank', 'noopener,noreferrer');
   };
 
-  // Filtrado avanzado de productos (Buscador + Categoría + Favoritos)
-  const filteredProducts = PRODUCTS.filter((p) => {
-    const matchesCategory = filter === 'todos' || p.category === filter;
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-                          p.description.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFavorites = !showOnlyFavorites || favorites.includes(p.id);
-    return matchesCategory && matchesSearch && matchesFavorites;
-  });
+  const filteredProducts = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return products.filter((p) => {
+      const matchesCategory = filter === 'todos' || p.category === filter;
+      const matchesSearch = !term ||
+        p.name.toLowerCase().includes(term) ||
+        p.description.toLowerCase().includes(term);
+      const matchesFavorites = !showOnlyFavorites || favorites.includes(p.id);
+      return matchesCategory && matchesSearch && matchesFavorites;
+    });
+  }, [products, filter, searchTerm, showOnlyFavorites, favorites]);
+
+  const handleCheckoutSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (cart.length === 0) return;
+
+    if (!BACKEND_URL) {
+      setCheckoutError('El pago con tarjeta no está disponible todavía. Usa "Pedir por WhatsApp" mientras lo configuramos.');
+      return;
+    }
+
+    setCheckoutLoading(true);
+    setCheckoutError(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/v1/checkout/create-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          customer: checkoutForm,
+          items: cart.map((item) => ({
+            productId: item.product.id,
+            name: item.product.name,
+            unitPrice: item.product.price,
+            quantity: item.quantity,
+          })),
+        }),
+      });
+
+      if (!response.ok) throw new Error('No se pudo iniciar el pago. Intenta de nuevo.');
+      const data = await response.json();
+      if (!data.url) throw new Error('El servidor no devolvió una URL de pago.');
+      window.location.href = data.url;
+    } catch (err: any) {
+      setCheckoutError(err.message || 'Ocurrió un error inesperado al iniciar el pago.');
+      setCheckoutLoading(false);
+    }
+  };
+
+  const handleNewsletterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const email = newsletterEmail.trim();
+    const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    if (!isValidEmail) {
+      setNewsletterStatus('error');
+      return;
+    }
+
+    setNewsletterStatus('loading');
+    try {
+      if (BACKEND_URL) {
+        const response = await fetch(`${BACKEND_URL}/api/v1/newsletter/subscribe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        if (!response.ok) throw new Error('No se pudo suscribir.');
+      } else {
+        const existing = loadFromStorage<string[]>(NEWSLETTER_STORAGE_KEY, []);
+        if (!existing.includes(email)) saveToStorage(NEWSLETTER_STORAGE_KEY, [...existing, email]);
+      }
+      setNewsletterStatus('success');
+      setNewsletterEmail('');
+      showToast('¡Gracias por suscribirte! 🌿');
+    } catch {
+      setNewsletterStatus('error');
+    }
+  };
+
+  const handleAdminLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ADMIN_PASSWORD) {
+      setAdminError('No hay una clave de administrador configurada (VITE_ADMIN_PASSWORD).');
+      return;
+    }
+    if (adminPasswordInput === ADMIN_PASSWORD) {
+      setIsAdminAuthed(true);
+      setAdminError(null);
+      setAdminPasswordInput('');
+    } else {
+      setAdminError('Clave incorrecta.');
+    }
+  };
+
+  const handleAdminLogout = () => {
+    setIsAdminAuthed(false);
+  };
+
+  const updateProductField = (id: number, field: keyof Product, value: string | number) => {
+    setProducts((prev) => prev.map((p) => (p.id === id ? { ...p, [field]: value } : p)));
+  };
+
+  const deleteProduct = (id: number) => {
+    setProducts((prev) => prev.filter((p) => p.id !== id));
+    showToast('Producto eliminado');
+  };
+
+  const addNewProduct = () => {
+    const newProduct: Product = {
+      id: nextLocalProductId++,
+      name: 'Nuevo producto',
+      category: 'capilar',
+      price: 0,
+      description: '',
+      icon: '🧴',
+      stock: 0,
+    };
+    setProducts((prev) => [...prev, newProduct]);
+  };
+
+  const restoreDefaultProducts = () => {
+    if (window.confirm('Esto reemplazará todos tus cambios con el catálogo original. ¿Continuar?')) {
+      setProducts(PRODUCTS);
+      showToast('Catálogo restaurado a los valores originales');
+    }
+  };
+
+  const resetDiagnostic = () => {
+    setStep(1);
+    setHairType('Rizado');
+    setScalpCondition('Seco');
+    setMainIssue('Frizz');
+    setResult(null);
+    setError(null);
+  };
 
   const handleDiagnosisSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (!BACKEND_URL) {
+      setError('El servicio de diagnóstico no está configurado. Contáctanos por WhatsApp.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     setResult(null);
@@ -274,64 +531,100 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 text-gray-800 font-sans flex flex-col justify-between relative">
+    <div className="min-h-screen bg-[#FAF8F4] text-gray-800 font-['Manrope',_sans-serif] flex flex-col justify-between relative">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+        .font-display { font-family: 'Fraunces', serif; font-optical-sizing: auto; }
+
+        @keyframes dyc-fade-up {
+          from { opacity: 0; transform: translateY(14px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .dyc-animate-in {
+          animation: dyc-fade-up 0.5s ease-out both;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .dyc-animate-in { animation: none; }
+        }
+      `}</style>
+
+      <a
+        href="#contenido-principal"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:bg-white focus:text-[#24402F] focus:px-4 focus:py-2 focus:rounded-lg focus:shadow-lg"
+      >
+        Saltar al contenido principal
+      </a>
+
       <div>
-        {/* 1. TOP BAR / ANUNCIO SUPERIOR ROTATIVO */}
-        <div className="bg-amber-400 text-slate-900 text-xs font-bold py-2 px-4 text-center tracking-wide flex justify-center items-center gap-2 shadow-sm">
+        {/* TOP BAR */}
+        <div className="bg-[#E7A94C] text-slate-900 text-xs font-bold py-2 px-4 text-center tracking-wide flex justify-center items-center gap-2 shadow-sm">
           <span>🚚 ¡Envíos disponibles a toda la República Dominicana!</span>
           <span className="hidden md:inline">•</span>
           <span className="hidden md:inline">✨ 100% Orgánico y Artesanal</span>
         </div>
 
-        {/* TOAST NOTIFICATION FLOTANTE */}
+        {/* TOAST NOTIFICATION */}
         {toastMessage && (
-          <div className="fixed top-16 right-5 z-50 bg-emerald-900 text-white text-xs font-bold px-4 py-3 rounded-xl shadow-xl flex items-center gap-2 animate-bounce">
-            <span>✨</span> {toastMessage}
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed top-16 right-5 z-50 bg-[#24402F] text-white text-xs font-bold px-4 py-3 rounded-xl shadow-xl flex items-center gap-2 animate-bounce"
+          >
+            <span aria-hidden="true">✨</span> {toastMessage}
           </div>
         )}
 
-        {/* NAVEGACIÓN PRINCIPAL */}
-        <nav className="bg-emerald-950 text-white sticky top-0 z-40 shadow-md">
+        {/* NAVEGACIÓN */}
+        <nav className="bg-[#1C2B22] text-white sticky top-0 z-40 shadow-md" aria-label="Navegación principal">
           <div className="max-w-6xl mx-auto px-4 py-3 flex justify-between items-center">
-            
-            <div className="flex items-center space-x-2 cursor-pointer" onClick={() => { setActiveTab('tienda'); setMobileMenuOpen(false); }}>
-              <span className="text-2xl">🌿</span>
-              <span className="font-extrabold text-xl tracking-wider text-emerald-100">D' Y&C ORGANIC</span>
-            </div>
+            <button
+              type="button"
+              className="flex items-center space-x-2 cursor-pointer"
+              onClick={() => { setActiveTab('tienda'); setMobileMenuOpen(false); }}
+            >
+              <span className="text-2xl" aria-hidden="true">🌿</span>
+              <span className="font-extrabold text-xl tracking-wider text-[#E7F1E7]">D' Y&C ORGANIC</span>
+            </button>
 
-            {/* Enlaces Desktop */}
             <div className="hidden md:flex items-center space-x-3 text-sm font-medium">
               <button
                 onClick={() => setActiveTab('tienda')}
-                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${activeTab === 'tienda' ? 'bg-emerald-800 text-emerald-200 font-bold shadow-inner' : 'text-gray-200 hover:bg-emerald-900'}`}
+                aria-current={activeTab === 'tienda' ? 'page' : undefined}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${activeTab === 'tienda' ? 'bg-[#2F5A3F] text-[#CFE3D2] font-bold shadow-inner' : 'text-gray-200 hover:bg-[#24402F]'}`}
               >
                 Tienda
               </button>
               <button
                 onClick={() => setActiveTab('nosotros')}
-                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${activeTab === 'nosotros' ? 'bg-emerald-800 text-emerald-200 font-bold shadow-inner' : 'text-gray-200 hover:bg-emerald-900'}`}
+                aria-current={activeTab === 'nosotros' ? 'page' : undefined}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${activeTab === 'nosotros' ? 'bg-[#2F5A3F] text-[#CFE3D2] font-bold shadow-inner' : 'text-gray-200 hover:bg-[#24402F]'}`}
               >
                 Sobre Nosotros & FAQ
               </button>
               <button
                 onClick={() => setActiveTab('diagnostico')}
-                className={`px-3.5 py-1.5 rounded-full transition-all text-xs uppercase font-bold tracking-wider cursor-pointer ${activeTab === 'diagnostico' ? 'bg-amber-500 text-slate-900 shadow-md' : 'bg-emerald-800 hover:bg-emerald-700 text-white'}`}
+                aria-current={activeTab === 'diagnostico' ? 'page' : undefined}
+                className={`px-3.5 py-1.5 rounded-full transition-all text-xs uppercase font-bold tracking-wider cursor-pointer ${activeTab === 'diagnostico' ? 'bg-[#D89432] text-slate-900 shadow-md' : 'bg-[#2F5A3F] hover:bg-[#3C6B4C] text-white'}`}
               >
                 Diagnóstico IA ✨
               </button>
             </div>
 
-            {/* Icono Carrito & Menú Hamburguesa */}
             <div className="flex items-center space-x-3">
               <button
                 onClick={() => setIsCartOpen(true)}
-                className="relative cursor-pointer bg-emerald-900 p-2.5 rounded-full hover:bg-emerald-800 transition-colors flex items-center justify-center shadow-sm"
+                aria-label={`Abrir carrito de compras, ${totalCartItems} artículo(s)`}
+                className="relative cursor-pointer bg-[#24402F] p-2.5 rounded-full hover:bg-[#2F5A3F] transition-colors flex items-center justify-center shadow-sm"
               >
-                🛒 <span className="text-xs bg-amber-500 text-slate-900 font-bold px-1.5 py-0.5 rounded-full ml-1">{totalCartItems}</span>
+                <span aria-hidden="true">🛒</span>
+                <span className="text-xs bg-[#D89432] text-slate-900 font-bold px-1.5 py-0.5 rounded-full ml-1">{totalCartItems}</span>
               </button>
 
               <button
                 onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                aria-label={mobileMenuOpen ? 'Cerrar menú' : 'Abrir menú'}
+                aria-expanded={mobileMenuOpen}
                 className="md:hidden text-white text-xl p-2 focus:outline-none cursor-pointer"
               >
                 {mobileMenuOpen ? '✕' : '☰'}
@@ -339,24 +632,23 @@ export default function App() {
             </div>
           </div>
 
-          {/* Menú Desplegable Móvil */}
           {mobileMenuOpen && (
-            <div className="md:hidden bg-emerald-900 px-4 pt-2 pb-4 space-y-2 border-t border-emerald-800 shadow-lg">
+            <div className="md:hidden bg-[#24402F] px-4 pt-2 pb-4 space-y-2 border-t border-[#2F5A3F] shadow-lg">
               <button
                 onClick={() => { setActiveTab('tienda'); setMobileMenuOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer ${activeTab === 'tienda' ? 'bg-emerald-800 text-emerald-200' : 'text-gray-200'}`}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer ${activeTab === 'tienda' ? 'bg-[#2F5A3F] text-[#CFE3D2]' : 'text-gray-200'}`}
               >
                 Tienda
               </button>
               <button
                 onClick={() => { setActiveTab('nosotros'); setMobileMenuOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer ${activeTab === 'nosotros' ? 'bg-emerald-800 text-emerald-200' : 'text-gray-200'}`}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer ${activeTab === 'nosotros' ? 'bg-[#2F5A3F] text-[#CFE3D2]' : 'text-gray-200'}`}
               >
                 Sobre Nosotros & FAQ
               </button>
               <button
                 onClick={() => { setActiveTab('diagnostico'); setMobileMenuOpen(false); }}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer ${activeTab === 'diagnostico' ? 'bg-amber-500 text-slate-900 font-bold' : 'text-emerald-100'}`}
+                className={`w-full text-left px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer ${activeTab === 'diagnostico' ? 'bg-[#D89432] text-slate-900 font-bold' : 'text-[#E7F1E7]'}`}
               >
                 Diagnóstico IA ✨
               </button>
@@ -366,38 +658,48 @@ export default function App() {
 
         {/* MODAL / VISTA RÁPIDA DE PRODUCTO */}
         {selectedProduct && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-            <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl relative space-y-4 max-h-[90vh] overflow-y-auto">
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+            onClick={closeProductModal}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="product-modal-title"
+              className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl relative space-y-4 max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
               <button
-                onClick={() => setSelectedProduct(null)}
+                onClick={closeProductModal}
+                aria-label="Cerrar detalle de producto"
                 className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl font-bold cursor-pointer bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center"
               >
                 ✕
               </button>
 
-              <div className="bg-emerald-50 rounded-2xl h-48 flex items-center justify-center text-7xl relative">
+              <div className="bg-[#F4F8F3] rounded-2xl h-48 flex items-center justify-center text-7xl relative">
                 {selectedProduct.badge && (
-                  <span className="absolute top-3 right-3 bg-amber-400 text-slate-900 font-extrabold text-xs uppercase px-2.5 py-1 rounded-full">
+                  <span className="absolute top-3 right-3 bg-[#E7A94C] text-slate-900 font-extrabold text-xs uppercase px-2.5 py-1 rounded-full">
                     {selectedProduct.badge}
                   </span>
                 )}
-                {selectedProduct.icon}
+                <span aria-hidden="true">{selectedProduct.icon}</span>
               </div>
 
               <div>
-                <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
+                <span className="text-xs font-bold text-[#2F5A3F] uppercase tracking-wider">
                   {selectedProduct.category === 'capilar' ? 'Cuidado Capilar' : 'Jabón Artesanal'}
                 </span>
-                <h2 className="text-2xl font-extrabold text-gray-900 mt-1 mb-2">{selectedProduct.name}</h2>
+                <h2 id="product-modal-title" className="font-display text-2xl font-bold text-gray-900 mt-1 mb-2">{selectedProduct.name}</h2>
                 <p className="text-gray-600 text-sm leading-relaxed mb-4">{selectedProduct.description}</p>
               </div>
 
               {selectedProduct.ingredients && (
                 <div className="space-y-1.5 bg-slate-50 p-3.5 rounded-xl border border-gray-100">
-                  <h4 className="font-bold text-xs text-gray-900 uppercase">Ingredientes Activos:</h4>
+                  <h3 className="font-bold text-xs text-gray-900 uppercase">Ingredientes Activos:</h3>
                   <div className="flex flex-wrap gap-1.5">
                     {selectedProduct.ingredients.map((ing, idx) => (
-                      <span key={idx} className="bg-emerald-100 text-emerald-900 text-xs font-semibold px-2.5 py-0.5 rounded-md">
+                      <span key={idx} className="bg-[#E7F1E7] text-[#24402F] text-xs font-semibold px-2.5 py-0.5 rounded-md">
                         🌿 {ing}
                       </span>
                     ))}
@@ -407,7 +709,7 @@ export default function App() {
 
               {selectedProduct.benefits && (
                 <div className="space-y-1.5">
-                  <h4 className="font-bold text-xs text-gray-900 uppercase">Beneficios Principales:</h4>
+                  <h3 className="font-bold text-xs text-gray-900 uppercase">Beneficios Principales:</h3>
                   <ul className="list-disc list-inside text-xs text-gray-600 space-y-1">
                     {selectedProduct.benefits.map((ben, idx) => (
                       <li key={idx}>{ben}</li>
@@ -416,11 +718,14 @@ export default function App() {
                 </div>
               )}
 
-              <div className="flex items-center justify-between pt-4 border-t border-gray-100">
-                <span className="text-2xl font-black text-gray-900">${selectedProduct.price.toFixed(2)}</span>
+              <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-gray-500 block">Precio</span>
+                  <span className="font-display text-2xl font-bold text-[#24402F]">{formatPrice(selectedProduct.price)}</span>
+                </div>
                 <button
-                  onClick={() => addToCart(selectedProduct, 1)}
-                  className="bg-emerald-800 hover:bg-emerald-900 text-white font-bold px-6 py-3 rounded-xl shadow-md transition-all text-sm cursor-pointer"
+                  onClick={() => addToCartFromModal(selectedProduct, 1)}
+                  className="bg-[#24402F] hover:bg-[#2F5A3F] text-white font-bold px-6 py-3 rounded-xl shadow-lg transition-all cursor-pointer text-sm"
                 >
                   Añadir al Carrito 🛒
                 </button>
@@ -429,61 +734,78 @@ export default function App() {
           </div>
         )}
 
-        {/* PANEL LATERAL DEL CARRITO (DRAWER) */}
+        {/* CARRITO LATERAL (DRAWER) */}
         {isCartOpen && (
-          <div className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-sm transition-opacity">
-            <div className="w-full max-w-md bg-white h-full shadow-2xl flex flex-col justify-between p-6">
-              <div>
-                <div className="flex justify-between items-center border-b border-gray-100 pb-4 mb-4">
-                  <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                    <span>🛒</span> Tu Carrito de Compras
+          <div
+            className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm"
+            onClick={() => setIsCartOpen(false)}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="cart-title"
+              className="bg-white w-full max-w-md h-full shadow-2xl flex flex-col justify-between p-6 overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b pb-4">
+                  <h2 id="cart-title" className="font-display text-xl font-bold text-gray-900 flex items-center gap-2">
+                    <span>🛒</span> Tu Carrito ({totalCartItems})
                   </h2>
                   <button
                     onClick={() => setIsCartOpen(false)}
-                    className="text-gray-400 hover:text-gray-600 text-xl font-bold p-1 cursor-pointer"
+                    aria-label="Cerrar carrito"
+                    className="text-gray-400 hover:text-gray-600 text-lg font-bold cursor-pointer bg-gray-100 rounded-full w-8 h-8 flex items-center justify-center"
                   >
                     ✕
                   </button>
                 </div>
 
                 {cart.length === 0 ? (
-                  <div className="text-center py-12 text-gray-400 space-y-2">
-                    <div className="text-5xl mb-2">🛍️</div>
-                    <p className="font-semibold text-sm">Tu carrito está vacío</p>
-                    <p className="text-xs">¡Agrega productos orgánicos para iniciar tu pedido!</p>
+                  <div className="text-center py-16 space-y-3">
+                    <span className="text-5xl" aria-hidden="true">🛒</span>
+                    <p className="text-gray-500 font-medium">Tu carrito está vacío.</p>
+                    <button
+                      onClick={() => setIsCartOpen(false)}
+                      className="bg-[#24402F] text-white px-4 py-2 rounded-xl text-xs font-bold cursor-pointer"
+                    >
+                      Explorar Productos
+                    </button>
                   </div>
                 ) : (
-                  <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-1">
+                  <div className="space-y-3 divide-y divide-gray-100">
                     {cart.map((item) => (
-                      <div
-                        key={item.product.id}
-                        className="flex items-center justify-between p-3 bg-slate-50 border border-gray-100 rounded-xl"
-                      >
-                        <div className="flex items-center space-x-3">
-                          <span className="text-3xl">{item.product.icon}</span>
+                      <div key={item.product.id} className="pt-3 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl bg-[#F4F8F3] p-2 rounded-xl">{item.product.icon}</span>
                           <div>
-                            <h4 className="font-bold text-xs text-gray-900">{item.product.name}</h4>
-                            <span className="text-xs font-semibold text-emerald-800">${item.product.price.toFixed(2)}</span>
+                            <h3 className="font-bold text-xs text-gray-900 line-clamp-1">{item.product.name}</h3>
+                            <p className="text-xs text-[#24402F] font-bold mt-0.5">{formatPrice(item.product.price)}</p>
                           </div>
                         </div>
 
-                        <div className="flex items-center space-x-2">
-                          <button
-                            onClick={() => updateQuantity(item.product.id, -1)}
-                            className="w-6 h-6 rounded-md bg-gray-200 hover:bg-gray-300 font-bold text-xs flex items-center justify-center cursor-pointer"
-                          >
-                            -
-                          </button>
-                          <span className="text-xs font-bold w-4 text-center">{item.quantity}</span>
-                          <button
-                            onClick={() => updateQuantity(item.product.id, 1)}
-                            className="w-6 h-6 rounded-md bg-emerald-800 text-white hover:bg-emerald-900 font-bold text-xs flex items-center justify-center cursor-pointer"
-                          >
-                            +
-                          </button>
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                            <button
+                              onClick={() => updateQuantity(item.product.id, -1)}
+                              aria-label={`Disminuir cantidad de ${item.product.name}`}
+                              className="px-2 py-0.5 text-gray-600 hover:bg-gray-200 cursor-pointer font-bold text-xs"
+                            >
+                              -
+                            </button>
+                            <span className="px-2 text-xs font-bold">{item.quantity}</span>
+                            <button
+                              onClick={() => updateQuantity(item.product.id, 1)}
+                              aria-label={`Aumentar cantidad de ${item.product.name}`}
+                              className="px-2 py-0.5 text-gray-600 hover:bg-gray-200 cursor-pointer font-bold text-xs"
+                            >
+                              +
+                            </button>
+                          </div>
                           <button
                             onClick={() => removeFromCart(item.product.id)}
-                            className="text-red-500 hover:text-red-700 text-xs font-bold ml-2 p-1 cursor-pointer"
+                            aria-label={`Eliminar ${item.product.name}`}
+                            className="text-red-400 hover:text-red-600 text-xs font-bold p-1 cursor-pointer"
                           >
                             🗑️
                           </button>
@@ -495,420 +817,559 @@ export default function App() {
               </div>
 
               {cart.length > 0 && (
-                <div className="border-t border-gray-100 pt-4 space-y-3">
-                  <div className="flex justify-between items-center text-lg font-extrabold text-gray-900">
-                    <span>Total:</span>
-                    <span className="text-emerald-900">${totalPrice.toFixed(2)}</span>
+                <div className="border-t pt-4 space-y-4">
+                  <div className="flex justify-between items-center text-base font-bold text-gray-900">
+                    <span>Total estimado:</span>
+                    <span className="font-display text-xl text-[#24402F]">{formatPrice(totalPrice)}</span>
                   </div>
 
-                  <button
-                    onClick={sendWhatsAppOrder}
-                    className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
-                  >
-                    <span>💬</span> Pedir por WhatsApp
-                  </button>
+                  {isCheckoutOpen ? (
+                    <form onSubmit={handleCheckoutSubmit} className="space-y-3 bg-slate-50 p-3.5 rounded-2xl border border-gray-200">
+                      <h3 className="font-bold text-xs uppercase text-gray-900">Datos de Envío y Pago</h3>
+                      {checkoutError && <p className="text-xs text-red-600 bg-red-50 p-2 rounded-lg">{checkoutError}</p>}
+                      <input
+                        type="text"
+                        placeholder="Nombre completo"
+                        required
+                        value={checkoutForm.name}
+                        onChange={(e) => setCheckoutForm({ ...checkoutForm, name: e.target.value })}
+                        className="w-full text-xs p-2.5 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <input
+                        type="email"
+                        placeholder="Correo electrónico"
+                        required
+                        value={checkoutForm.email}
+                        onChange={(e) => setCheckoutForm({ ...checkoutForm, email: e.target.value })}
+                        className="w-full text-xs p-2.5 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <input
+                        type="tel"
+                        placeholder="Teléfono / WhatsApp"
+                        required
+                        value={checkoutForm.phone}
+                        onChange={(e) => setCheckoutForm({ ...checkoutForm, phone: e.target.value })}
+                        className="w-full text-xs p-2.5 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Dirección exacta"
+                        required
+                        value={checkoutForm.address}
+                        onChange={(e) => setCheckoutForm({ ...checkoutForm, address: e.target.value })}
+                        className="w-full text-xs p-2.5 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Ciudad / Sector"
+                        required
+                        value={checkoutForm.city}
+                        onChange={(e) => setCheckoutForm({ ...checkoutForm, city: e.target.value })}
+                        className="w-full text-xs p-2.5 rounded-lg border border-gray-300 bg-white"
+                      />
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setIsCheckoutOpen(false)}
+                          className="w-1/2 bg-gray-200 text-gray-800 text-xs font-bold py-2.5 rounded-xl cursor-pointer"
+                        >
+                          Volver
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={checkoutLoading}
+                          className="w-1/2 bg-[#D89432] hover:bg-[#c28126] text-slate-900 text-xs font-bold py-2.5 rounded-xl shadow cursor-pointer disabled:opacity-50"
+                        >
+                          {checkoutLoading ? 'Procesando...' : 'Pagar con Tarjeta 💳'}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div className="space-y-2">
+                      <button
+                        onClick={sendWhatsAppOrder}
+                        className="w-full bg-[#25D366] hover:bg-[#20ba5a] text-white font-bold py-3 rounded-xl shadow transition-all cursor-pointer text-xs flex items-center justify-center gap-2"
+                      >
+                        <span>💬</span> Pedir por WhatsApp
+                      </button>
+                      <button
+                        onClick={() => setIsCheckoutOpen(true)}
+                        className="w-full bg-[#24402F] hover:bg-[#2F5A3F] text-white font-bold py-3 rounded-xl shadow transition-all cursor-pointer text-xs flex items-center justify-center gap-2"
+                      >
+                        <span>💳</span> Pagar con Tarjeta (Checkout Seguro)
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* VISTA 1: TIENDA & CATÁLOGO */}
-        {activeTab === 'tienda' && (
-          <main className="max-w-6xl mx-auto px-4 mt-6">
-            <section className="bg-gradient-to-r from-emerald-900 to-emerald-800 text-white rounded-3xl p-8 md:p-12 mb-10 shadow-xl relative overflow-hidden">
-              <div className="max-w-xl space-y-4 relative z-10">
-                <span className="bg-emerald-700/80 text-emerald-100 text-xs uppercase font-bold px-3 py-1 rounded-full">
-                  Línea Orgánica & Artesanal
-                </span>
-                <h1 className="text-4xl md:text-5xl font-black leading-tight">
-                  Resalta la belleza natural de tu cabello y piel
-                </h1>
-                <p className="text-emerald-100 text-sm md:text-base">
-                  Productos formulados con ingredientes 100% orgánicos, libres de sulfatos y parabenos.
-                </p>
-                <div className="flex gap-4 pt-2">
-                  <button
-                    onClick={() => setActiveTab('diagnostico')}
-                    className="bg-amber-500 hover:bg-amber-600 text-slate-900 font-bold px-5 py-3 rounded-xl transition-all shadow-md text-sm cursor-pointer"
-                  >
-                    Descubrir mi Rutina Ideal ✨
-                  </button>
+        {/* CONTENIDO PRINCIPAL */}
+        <main id="contenido-principal" className="max-w-6xl mx-auto px-4 py-8 flex-grow">
+          {activeTab === 'tienda' && (
+            <div className="space-y-8 dyc-animate-in">
+              {/* HERO SECTION */}
+              <div className="bg-[#1C2B22] text-white rounded-3xl p-8 md:p-12 relative overflow-hidden shadow-xl flex flex-col md:flex-row items-center justify-between gap-8">
+                <div className="absolute top-0 right-0 w-96 h-96 bg-[#2F5A3F] rounded-full blur-3xl opacity-30 -mr-20 -mt-20 pointer-events-none" />
+                <div className="space-y-4 max-w-lg relative z-10 text-center md:text-left">
+                  <span className="bg-[#D89432] text-slate-900 text-xs font-extrabold uppercase px-3 py-1 rounded-full tracking-wider">
+                    Belleza 100% Natural 🌿
+                  </span>
+                  <h1 className="font-display text-3xl md:text-5xl font-bold leading-tight text-[#FAF8F4]">
+                    Nutrición real para tu cabello y piel
+                  </h1>
+                  <p className="text-gray-300 text-sm leading-relaxed">
+                    Fórmulas artesanales libres de sulfatos y parabenos diseñadas para rescatar la vitalidad natural de tu melena.
+                  </p>
+                  <div className="flex flex-wrap gap-3 justify-center md:justify-start pt-2">
+                    <button
+                      onClick={() => setActiveTab('diagnostico')}
+                      className="bg-[#D89432] hover:bg-[#c28126] text-slate-900 font-bold px-6 py-3 rounded-xl shadow-lg transition-all cursor-pointer text-xs uppercase tracking-wider"
+                    >
+                      Diagnóstico Capilar IA ✨
+                    </button>
+                  </div>
+                </div>
+                <div className="text-8xl md:text-9xl bg-[#24402F] p-8 rounded-3xl shadow-inner relative z-10">
+                  🌿
                 </div>
               </div>
-            </section>
 
-            {/* BARRA DE BÚSQUEDA Y FILTROS */}
-            <div className="flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 mb-8">
-              <div className="relative flex-1">
-                <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-gray-400">🔍</span>
-                <input
-                  type="text"
-                  placeholder="Buscar shampoo, gotero, jabón..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-11 pr-4 py-3 bg-white border border-gray-200 rounded-2xl text-sm shadow-sm focus:ring-2 focus:ring-emerald-800 focus:outline-none"
-                />
-              </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex bg-gray-200 p-1 rounded-xl text-xs font-semibold">
+              {/* FILTROS Y BUSCADOR */}
+              <div className="flex flex-col md:flex-row justify-between items-center gap-4 bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+                <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
                   <button
-                    onClick={() => setFilter('todos')}
-                    className={`px-3.5 py-2 rounded-lg transition-all cursor-pointer ${filter === 'todos' ? 'bg-white text-emerald-950 shadow' : 'text-gray-600'}`}
+                    onClick={() => { setFilter('todos'); setShowOnlyFavorites(false); }}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${filter === 'todos' && !showOnlyFavorites ? 'bg-[#24402F] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                   >
                     Todos
                   </button>
                   <button
-                    onClick={() => setFilter('capilar')}
-                    className={`px-3.5 py-2 rounded-lg transition-all cursor-pointer ${filter === 'capilar' ? 'bg-white text-emerald-950 shadow' : 'text-gray-600'}`}
+                    onClick={() => { setFilter('capilar'); setShowOnlyFavorites(false); }}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${filter === 'capilar' && !showOnlyFavorites ? 'bg-[#24402F] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                   >
-                    Capilar
+                    Cuidado Capilar
                   </button>
                   <button
-                    onClick={() => setFilter('jabones')}
-                    className={`px-3.5 py-2 rounded-lg transition-all cursor-pointer ${filter === 'jabones' ? 'bg-white text-emerald-950 shadow' : 'text-gray-600'}`}
+                    onClick={() => { setFilter('jabones'); setShowOnlyFavorites(false); }}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${filter === 'jabones' && !showOnlyFavorites ? 'bg-[#24402F] text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
                   >
-                    Jabones
+                    Jabones Artesanales
+                  </button>
+                  <button
+                    onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1 ${showOnlyFavorites ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                  >
+                    <span>❤️</span> Favoritos ({favorites.length})
                   </button>
                 </div>
 
-                <button
-                  onClick={() => setShowOnlyFavorites(!showOnlyFavorites)}
-                  className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm ${
-                    showOnlyFavorites ? 'bg-rose-500 text-white' : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  <span>❤️</span> Favoritos ({favorites.length})
-                </button>
+                <div className="w-full md:w-72">
+                  <input
+                    type="text"
+                    placeholder="Buscar producto..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full text-xs p-2.5 rounded-xl border border-gray-200 bg-gray-50 focus:bg-white transition-colors"
+                  />
+                </div>
               </div>
-            </div>
 
-            {/* GRILLA DE PRODUCTOS */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
+              {/* GRILLA DE PRODUCTOS */}
               {filteredProducts.length === 0 ? (
-                <div className="col-span-full text-center py-16 text-gray-400 space-y-2">
-                  <div className="text-5xl">🌿</div>
-                  <p className="font-semibold text-base">No se encontraron productos</p>
-                  <p className="text-xs">Intenta con otra búsqueda o filtro.</p>
+                <div className="text-center py-16 space-y-2 bg-white rounded-3xl border border-gray-100 shadow-sm">
+                  <span className="text-4xl" aria-hidden="true">🔍</span>
+                  <p className="text-gray-600 font-bold text-sm">No encontramos productos con esos criterios.</p>
+                  <button
+                    onClick={() => { setSearchTerm(''); setFilter('todos'); setShowOnlyFavorites(false); }}
+                    className="text-xs text-[#24402F] font-bold underline cursor-pointer pt-2"
+                  >
+                    Limpiar filtros
+                  </button>
                 </div>
               ) : (
-                filteredProducts.map((product) => {
-                  const isFav = favorites.includes(product.id);
-                  return (
-                    <div
-                      key={product.id}
-                      className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm hover:shadow-md transition-all flex flex-col justify-between relative group"
-                    >
-                      <button
-                        onClick={() => toggleFavorite(product.id)}
-                        className={`absolute top-4 right-4 z-10 w-9 h-9 rounded-full flex items-center justify-center transition-all cursor-pointer shadow-sm ${
-                          isFav ? 'bg-rose-50 text-rose-500' : 'bg-white/80 text-gray-400 hover:text-rose-500'
-                        }`}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredProducts.map((product) => {
+                    const isFav = favorites.includes(product.id);
+                    return (
+                      <div
+                        key={product.id}
+                        className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 flex flex-col justify-between hover:shadow-md transition-shadow relative group"
                       >
-                        {isFav ? '❤️' : '🤍'}
-                      </button>
+                        <div>
+                          <div className="bg-[#F4F8F3] rounded-2xl h-44 flex items-center justify-center text-6xl relative mb-4">
+                            {product.badge && (
+                              <span className="absolute top-3 left-3 bg-[#E7A94C] text-slate-900 font-extrabold text-[10px] uppercase px-2.5 py-1 rounded-full">
+                                {product.badge}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => toggleFavorite(product.id)}
+                              aria-label={isFav ? 'Quitar de favoritos' : 'Añadir a favoritos'}
+                              className={`absolute top-3 right-3 p-2 rounded-full text-sm transition-colors cursor-pointer ${isFav ? 'bg-red-50 text-red-500' : 'bg-white/80 text-gray-400 hover:text-red-500'}`}
+                            >
+                              {isFav ? '❤️' : '🤍'}
+                            </button>
+                            <span aria-hidden="true">{product.icon}</span>
+                          </div>
 
-                      <div onClick={() => setSelectedProduct(product)} className="cursor-pointer">
-                        <div className="bg-emerald-50 rounded-xl h-40 flex items-center justify-center text-6xl mb-4 relative overflow-hidden">
-                          {product.badge && (
-                            <span className="absolute top-3 left-3 bg-amber-400 text-slate-900 font-extrabold text-[10px] uppercase px-2 py-0.5 rounded-full">
-                              {product.badge}
-                            </span>
-                          )}
-                          {product.icon}
+                          <span className="text-[10px] font-bold text-[#2F5A3F] uppercase tracking-wider">
+                            {product.category === 'capilar' ? 'Cuidado Capilar' : 'Jabón Artesanal'}
+                          </span>
+                          <h3
+                            onClick={(e) => openProductModal(product, e.currentTarget)}
+                            className="font-display text-lg font-bold text-gray-900 mt-1 mb-1.5 cursor-pointer hover:text-[#24402F] transition-colors"
+                          >
+                            {product.name}
+                          </h3>
+                          <p className="text-gray-500 text-xs leading-relaxed line-clamp-2 mb-4">{product.description}</p>
                         </div>
-                        <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">
-                          {product.category === 'capilar' ? 'Cuidado Capilar' : 'Jabón Artesanal'}
-                        </span>
-                        <h3 className="font-bold text-gray-900 text-lg mt-1 mb-2 hover:text-emerald-800 transition-colors">{product.name}</h3>
-                        <p className="text-gray-500 text-xs leading-relaxed mb-4">{product.description}</p>
-                      </div>
 
-                      <div className="flex items-center justify-between pt-4 border-t border-gray-100">
-                        <span className="text-xl font-extrabold text-gray-900">${product.price.toFixed(2)}</span>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => setSelectedProduct(product)}
-                            className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold px-3 py-2.5 rounded-xl transition-all cursor-pointer"
-                          >
-                            Ver más
-                          </button>
-                          <button
-                            onClick={() => addToCart(product, 1)}
-                            className="bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl transition-all flex items-center gap-1 cursor-pointer"
-                          >
-                            <span>+ Añadir</span>
-                          </button>
+                        <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
+                          <div>
+                            <span className="text-[10px] text-gray-400 block">Precio</span>
+                            <span className="font-display text-lg font-bold text-[#24402F]">{formatPrice(product.price)}</span>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={(e) => openProductModal(product, e.currentTarget)}
+                              className="bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold px-3 py-2.5 rounded-xl transition-all cursor-pointer"
+                            >
+                              Ver detalle
+                            </button>
+                            <button
+                              onClick={() => addToCart(product, 1)}
+                              className="bg-[#24402F] hover:bg-[#2F5A3F] text-white text-xs font-bold px-3 py-2.5 rounded-xl shadow transition-all cursor-pointer"
+                            >
+                              + Añadir
+                            </button>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })
+                    );
+                  })}
+                </div>
               )}
             </div>
+          )}
 
-            {/* SECCIÓN DE TESTIMONIOS (PRUEBA SOCIAL) */}
-            <section className="mb-16 bg-emerald-900/5 rounded-3xl p-8 border border-emerald-900/10">
-              <div className="text-center max-w-xl mx-auto mb-8 space-y-2">
-                <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full uppercase">
-                  Prueba Social
+          {activeTab === 'nosotros' && (
+            <div className="space-y-12 dyc-animate-in max-w-4xl mx-auto py-4">
+              <div className="bg-[#1C2B22] text-white rounded-3xl p-8 md:p-12 space-y-4 shadow-xl text-center">
+                <span className="bg-[#D89432] text-slate-900 text-xs font-extrabold uppercase px-3 py-1 rounded-full">
+                  Nuestra Esencia 🌿
                 </span>
-                <h2 className="text-2xl font-extrabold text-gray-900">Lo que dicen nuestras clientas</h2>
-                <p className="text-gray-600 text-xs">Experiencias reales con nuestros productos artesanales y orgánicos.</p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {TESTIMONIALS.map((t) => (
-                  <div key={t.id} className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-3">
-                    <div className="text-amber-400 text-sm">★★★★★</div>
-                    <p className="text-gray-700 text-xs leading-relaxed italic">"{t.comment}"</p>
-                    <div className="pt-2 border-t border-gray-100 flex justify-between items-center text-xs">
-                      <span className="font-bold text-gray-900">{t.name}</span>
-                      <span className="text-gray-400">{t.location}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </main>
-        )}
-
-        {/* VISTA 2: SOBRE NOSOTROS & FAQ */}
-        {activeTab === 'nosotros' && (
-          <main className="max-w-4xl mx-auto px-4 mt-8 mb-12 space-y-10">
-            <div className="bg-white rounded-3xl p-8 md:p-12 shadow-sm border border-gray-100 space-y-8">
-              <div className="text-center max-w-2xl mx-auto space-y-3">
-                <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full uppercase">
-                  Nuestra Historia
-                </span>
-                <h2 className="text-3xl font-extrabold text-gray-900">Sobre D' Y&C ORGANIC</h2>
-                <p className="text-gray-600 text-sm leading-relaxed">
-                  Creemos en el poder transformador de la naturaleza. Formulamos productos libres de químicos agresivos para cuidar y restaurar la salud de tu cabello y piel de forma artesanal.
+                <h1 className="font-display text-3xl md:text-4xl font-bold">Hecho a mano con amor y propósito</h1>
+                <p className="text-gray-300 text-sm leading-relaxed max-w-2xl mx-auto">
+                  En D' Y&C ORGANIC creemos que el cuidado personal no debe comprometer tu salud ni la del planeta. Cada fórmula es elaborada con extractos botánicos puros.
                 </p>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-6 border-t border-gray-100">
-                <div className="p-5 bg-slate-50 rounded-2xl text-center space-y-2">
-                  <div className="text-3xl">🌱</div>
-                  <h4 className="font-bold text-gray-900 text-sm">100% Orgánico</h4>
-                  <p className="text-xs text-gray-500">Ingredientes naturales cuidadosamente seleccionados sin sulfatos ni parabenos.</p>
-                </div>
-                <div className="p-5 bg-slate-50 rounded-2xl text-center space-y-2">
-                  <div className="text-3xl">🧼</div>
-                  <h4 className="font-bold text-gray-900 text-sm">Elaboración Artesanal</h4>
-                  <p className="text-xs text-gray-500">Cada lote de jabones y productos capilares es hecho a mano con amor y precisión.</p>
-                </div>
-                <div className="p-5 bg-slate-50 rounded-2xl text-center space-y-2">
-                  <div className="text-3xl">💚</div>
-                  <h4 className="font-bold text-gray-900 text-sm">Cuidado Personalizado</h4>
-                  <p className="text-xs text-gray-500">Te ayudamos a encontrar la rutina perfecta según tu tipo de cabello e inquietudes.</p>
-                </div>
-              </div>
-            </div>
-
-            {/* PREGUNTAS FRECUENTES (FAQ) INTERACTIVAS */}
-            <div className="bg-white rounded-3xl p-8 md:p-12 shadow-sm border border-gray-100 space-y-6">
-              <div className="text-center space-y-2">
-                <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full uppercase">
-                  Dudas Comunes
-                </span>
-                <h2 className="text-2xl font-extrabold text-gray-900">Preguntas Frecuentes</h2>
-              </div>
-
-              <div className="space-y-3 max-w-2xl mx-auto">
-                {FAQS.map((faq, index) => {
-                  const isOpen = openFaqIndex === index;
-                  return (
-                    <div key={index} className="border border-gray-200 rounded-2xl overflow-hidden transition-all">
-                      <button
-                        onClick={() => setOpenFaqIndex(isOpen ? null : index)}
-                        className="w-full p-4 text-left font-bold text-sm text-gray-900 bg-slate-50 hover:bg-slate-100 flex justify-between items-center cursor-pointer"
-                      >
-                        <span>{faq.question}</span>
-                        <span className="text-emerald-800 font-extrabold text-lg">{isOpen ? '−' : '+'}</span>
-                      </button>
-                      {isOpen && (
-                        <div className="p-4 bg-white text-xs text-gray-600 leading-relaxed border-t border-gray-100">
-                          {faq.answer}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </main>
-        )}
-
-        {/* VISTA 3: DIAGNÓSTICO CON IA */}
-        {activeTab === 'diagnostico' && (
-          <main className="max-w-2xl mx-auto px-4 mt-8 mb-12">
-            <div className="bg-white rounded-3xl shadow-xl p-8 border border-gray-100">
-              <span className="text-xs font-bold text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full uppercase">
-                Asesoría Personalizada
-              </span>
-              <h2 className="text-3xl font-extrabold text-gray-900 mt-3 mb-2">Diagnóstico Capilar D' Y&C</h2>
-              <p className="text-gray-500 text-sm mb-6">
-                Responde estas breves preguntas y te recomendaremos los productos ideales para la salud de tu cabello.
-              </p>
-
-              {step < 4 && (
-                <div className="flex justify-between items-center mb-6 max-w-xs mx-auto">
-                  {[1, 2, 3].map((s) => (
-                    <div key={s} className="flex items-center">
-                      <div
-                        className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-                          step === s ? 'bg-emerald-800 text-white shadow-md' : step > s ? 'bg-emerald-200 text-emerald-900' : 'bg-gray-200 text-gray-500'
-                        }`}
-                      >
-                        {s}
+              {/* SECCIÓN FAQ CON ACORDEÓN */}
+              <div className="space-y-4">
+                <h2 className="font-display text-2xl font-bold text-gray-900 text-center">Preguntas Frecuentes (FAQ)</h2>
+                <div className="space-y-3">
+                  {FAQS.map((faq, idx) => {
+                    const isOpen = openFaqIndex === idx;
+                    return (
+                      <div key={idx} className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-sm">
+                        <button
+                          onClick={() => setOpenFaqIndex(isOpen ? null : idx)}
+                          aria-expanded={isOpen}
+                          className="w-full p-4 text-left font-bold text-sm text-gray-900 flex justify-between items-center cursor-pointer hover:bg-gray-50"
+                        >
+                          <span>{faq.question}</span>
+                          <span className="text-lg font-normal">{isOpen ? '−' : '+'}</span>
+                        </button>
+                        {isOpen && (
+                          <div className="px-4 pb-4 text-xs text-gray-600 leading-relaxed border-t border-gray-100 pt-3">
+                            {faq.answer}
+                          </div>
+                        )}
                       </div>
-                      {s < 3 && <div className={`w-12 h-1 ${step > s ? 'bg-emerald-300' : 'bg-gray-200'}`} />}
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* TESTIMONIOS */}
+              <div className="space-y-6 pt-6">
+                <h2 className="font-display text-2xl font-bold text-gray-900 text-center">Lo que dicen nuestras clientas</h2>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {TESTIMONIALS.map((t) => (
+                    <div key={t.id} className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm space-y-3 flex flex-col justify-between">
+                      <p className="text-xs text-gray-600 italic leading-relaxed">"{t.comment}"</p>
+                      <div className="border-t pt-3 flex justify-between items-center text-xs">
+                        <span className="font-bold text-gray-900">{t.name}</span>
+                        <span className="text-gray-400">{t.location}</span>
+                      </div>
                     </div>
                   ))}
                 </div>
-              )}
+              </div>
 
-              {step === 1 && (
-                <div className="space-y-6">
-                  <h3 className="font-bold text-lg text-gray-900">¿Cuál es tu tipo de cabello?</h3>
-                  <div className="grid grid-cols-2 gap-4">
-                    {[
-                      { id: 'Liso', label: 'Liso', icon: '✨' },
-                      { id: 'Ondulado', label: 'Ondulado', icon: '🌊' },
-                      { id: 'Rizado', label: 'Rizado', icon: '🌀' },
-                      { id: 'Afro', label: 'Afro', icon: '👑' },
-                    ].map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => setHairType(item.id)}
-                        className={`p-5 rounded-xl border-2 text-center transition-all cursor-pointer ${
-                          hairType === item.id ? 'border-emerald-800 bg-emerald-50 text-emerald-900 shadow-sm' : 'border-gray-200'
-                        }`}
-                      >
-                        <div className="text-3xl mb-1">{item.icon}</div>
-                        <div className="font-semibold text-sm">{item.label}</div>
-                      </button>
-                    ))}
-                  </div>
-                  <button onClick={() => setStep(2)} className="w-full bg-emerald-800 hover:bg-emerald-900 text-white font-semibold py-3 rounded-xl transition-all cursor-pointer">
-                    Siguiente
+              {/* NEWSLETTER */}
+              <div className="bg-[#24402F] text-white rounded-3xl p-8 space-y-4 text-center">
+                <h2 className="font-display text-xl font-bold">Suscríbete para recibir consejos de belleza y ofertas exclusivas</h2>
+                <form onSubmit={handleNewsletterSubmit} className="flex flex-col sm:flex-row gap-2 max-w-md mx-auto">
+                  <input
+                    type="email"
+                    placeholder="Tu correo electrónico"
+                    required
+                    value={newsletterEmail}
+                    onChange={(e) => setNewsletterEmail(e.target.value)}
+                    className="flex-grow text-xs p-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-300 focus:outline-none focus:bg-white/20"
+                  />
+                  <button
+                    type="submit"
+                    disabled={newsletterStatus === 'loading'}
+                    className="bg-[#D89432] hover:bg-[#c28126] text-slate-900 font-bold px-6 py-3 rounded-xl text-xs cursor-pointer shadow"
+                  >
+                    {newsletterStatus === 'loading' ? 'Enviando...' : 'Suscribirme ✨'}
                   </button>
-                </div>
-              )}
+                </form>
+                {newsletterStatus === 'success' && <p className="text-xs text-[#E7A94C] font-bold">¡Gracias por suscribirte con éxito!</p>}
+                {newsletterStatus === 'error' && <p className="text-xs text-red-300">Por favor, introduce un correo válido.</p>}
+              </div>
+            </div>
+          )}
 
-              {step === 2 && (
-                <div className="space-y-6">
-                  <h3 className="font-bold text-lg text-gray-900">Estado del cuero cabelludo</h3>
-                  <div className="space-y-3">
-                    {['Seco', 'Graso', 'Normal', 'Sensible'].map((cond) => (
+          {activeTab === 'diagnostico' && (
+            <div className="max-w-2xl mx-auto bg-white rounded-3xl p-6 md:p-10 shadow-sm border border-gray-100 dyc-animate-in space-y-6">
+              <div className="text-center space-y-2">
+                <span className="bg-[#E7A94C] text-slate-900 text-xs font-extrabold uppercase px-3 py-1 rounded-full">
+                  Inteligencia Artificial ✨
+                </span>
+                <h1 className="font-display text-2xl md:text-3xl font-bold text-gray-900">Diagnóstico Capilar Personalizado</h1>
+                <p className="text-gray-500 text-xs">Responde 3 breves preguntas para que nuestra IA determine el tratamiento ideal para ti.</p>
+              </div>
+
+              {error && <p className="text-xs text-red-600 bg-red-50 p-3 rounded-xl border border-red-100">{error}</p>}
+
+              {step < 4 ? (
+                <form onSubmit={(e) => { e.preventDefault(); if (step < 3) setStep(step + 1); else handleDiagnosisSubmit(e); }} className="space-y-6">
+                  {step === 1 && (
+                    <div className="space-y-3">
+                      <label className="block font-bold text-xs uppercase text-gray-700">1. ¿Cuál es tu tipo de cabello principal?</label>
+                      <div className="grid grid-cols-2 gap-3">
+                        {['Rizado', 'Lacio', 'Ondulado', 'Afro'].map((type) => (
+                          <button
+                            key={type}
+                            type="button"
+                            onClick={() => setHairType(type)}
+                            className={`p-4 rounded-2xl border text-xs font-bold transition-all cursor-pointer ${hairType === type ? 'border-[#24402F] bg-[#F4F8F3] text-[#24402F] shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                          >
+                            {type}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {step === 2 && (
+                    <div className="space-y-3">
+                      <label className="block font-bold text-xs uppercase text-gray-700">2. ¿Cómo describirías tu cuero cabelludo?</label>
+                      <div className="grid grid-cols-3 gap-3">
+                        {['Seco', 'Graso', 'Mixto'].map((cond) => (
+                          <button
+                            key={cond}
+                            type="button"
+                            onClick={() => setScalpCondition(cond)}
+                            className={`p-4 rounded-2xl border text-xs font-bold transition-all cursor-pointer ${scalpCondition === cond ? 'border-[#24402F] bg-[#F4F8F3] text-[#24402F] shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                          >
+                            {cond}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {step === 3 && (
+                    <div className="space-y-3">
+                      <label className="block font-bold text-xs uppercase text-gray-700">3. ¿Cuál es tu principal problema o meta capilar?</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {HAIR_ISSUES.map((issue) => (
+                          <button
+                            key={issue}
+                            type="button"
+                            onClick={() => setMainIssue(issue)}
+                            className={`p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${mainIssue === issue ? 'border-[#24402F] bg-[#F4F8F3] text-[#24402F] shadow-sm' : 'border-gray-200 text-gray-600 hover:bg-gray-50'}`}
+                          >
+                            {issue}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between pt-4 border-t border-gray-100">
+                    {step > 1 ? (
                       <button
-                        key={cond}
                         type="button"
-                        onClick={() => setScalpCondition(cond)}
-                        className={`w-full p-4 rounded-xl border-2 text-left font-semibold cursor-pointer ${
-                          scalpCondition === cond ? 'border-emerald-800 bg-emerald-50 text-emerald-900' : 'border-gray-200'
-                        }`}
+                        onClick={() => setStep(step - 1)}
+                        className="bg-gray-100 text-gray-700 text-xs font-bold px-5 py-2.5 rounded-xl cursor-pointer"
                       >
-                        {cond}
+                        Anterior
                       </button>
-                    ))}
-                  </div>
-                  <div className="flex gap-3">
-                    <button onClick={() => setStep(1)} className="w-1/3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl cursor-pointer">
-                      Atrás
-                    </button>
-                    <button onClick={() => setStep(3)} className="w-2/3 bg-emerald-800 hover:bg-emerald-900 text-white font-semibold py-3 rounded-xl cursor-pointer">
-                      Siguiente
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {step === 3 && (
-                <form onSubmit={handleDiagnosisSubmit} className="space-y-6">
-                  <h3 className="font-bold text-lg text-gray-900">¿Qué buscas solucionar?</h3>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-600 uppercase mb-2">Problema Principal</label>
-                    <input
-                      type="text"
-                      value={mainIssue}
-                      onChange={(e) => setMainIssue(e.target.value)}
-                      className="w-full p-3.5 bg-gray-50 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-emerald-800 focus:outline-none"
-                      placeholder="Ej. Control de Frizz, Caída, Brillo..."
-                      required
-                    />
-                  </div>
-                  {error && <div className="p-3 bg-red-50 text-red-700 text-sm rounded-xl">{error}</div>}
-                  <div className="flex gap-3">
-                    <button type="button" onClick={() => setStep(2)} className="w-1/3 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-3 rounded-xl cursor-pointer">
-                      Atrás
-                    </button>
-                    <button type="submit" disabled={loading} className="w-2/3 bg-emerald-800 hover:bg-emerald-900 text-white font-semibold py-3 rounded-xl cursor-pointer">
-                      {loading ? 'Analizando...' : 'Generar Diagnóstico'}
+                    ) : <div />}
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="bg-[#24402F] hover:bg-[#2F5A3F] text-white text-xs font-bold px-6 py-2.5 rounded-xl shadow cursor-pointer disabled:opacity-50"
+                    >
+                      {loading ? 'Analizando con IA...' : step === 3 ? 'Ver Resultado ✨' : 'Siguiente'}
                     </button>
                   </div>
                 </form>
-              )}
-
-              {step === 4 && result && (
-                <div className="space-y-6">
-                  <h3 className="text-xl font-bold text-emerald-900">Tu Rutina Sugerida</h3>
-                  <p className="text-gray-700 text-sm bg-slate-50 p-4 rounded-xl border border-gray-100">{result.recomendacion}</p>
-                  <div className="space-y-2">
-                    <span className="font-bold text-xs uppercase tracking-wide text-gray-600">Productos Sugeridos:</span>
-                    {result.productosRecomendados?.map((prod, idx) => (
-                      <div key={idx} className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm font-semibold text-emerald-950">
-                        🌿 {prod}
-                      </div>
-                    ))}
+              ) : (
+                <div className="space-y-6 text-center">
+                  <div className="bg-[#F4F8F3] p-6 rounded-3xl border border-gray-200 space-y-4">
+                    <span className="text-4xl" aria-hidden="true">✨</span>
+                    <h2 className="font-display text-xl font-bold text-gray-900">Tu Diagnóstico Personalizado</h2>
+                    <p className="text-xs text-gray-600 leading-relaxed text-left bg-white p-4 rounded-2xl border border-gray-100">
+                      {result?.recomendacion || 'Basado en tu tipo de cabello, te recomendamos nuestra línea botánica para restaurar la hidratación profunda.'}
+                    </p>
                   </div>
-                  <button onClick={() => setStep(1)} className="w-full bg-gray-100 text-gray-800 font-semibold py-3 rounded-xl cursor-pointer">
-                    Realizar Otro Análisis
-                  </button>
+
+                  <div className="flex gap-3 justify-center">
+                    <button
+                      onClick={resetDiagnostic}
+                      className="bg-gray-100 text-gray-700 text-xs font-bold px-5 py-3 rounded-xl cursor-pointer"
+                    >
+                      Nuevo Diagnóstico
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('tienda')}
+                      className="bg-[#24402F] text-white text-xs font-bold px-6 py-3 rounded-xl shadow cursor-pointer"
+                    >
+                      Ver Productos Recomendados 🛒
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
-          </main>
-        )}
+          )}
+
+          {activeTab === 'admin' && (
+            <div className="max-w-4xl mx-auto bg-white rounded-3xl p-6 md:p-10 shadow-sm border border-gray-100 dyc-animate-in space-y-6">
+              {!isAdminAuthed ? (
+                <form onSubmit={handleAdminLogin} className="max-w-md mx-auto space-y-4 py-8">
+                  <div className="text-center space-y-2">
+                    <span className="text-3xl" aria-hidden="true">🔐</span>
+                    <h1 className="font-display text-2xl font-bold">Panel de Administración</h1>
+                    <p className="text-xs text-gray-500">Introduce la contraseña de administrador para gestionar el catálogo.</p>
+                  </div>
+                  {adminError && <p className="text-xs text-red-600 bg-red-50 p-2 rounded-lg">{adminError}</p>}
+                  <input
+                    type="password"
+                    placeholder="Contraseña (VITE_ADMIN_PASSWORD)"
+                    value={adminPasswordInput}
+                    onChange={(e) => setAdminPasswordInput(e.target.value)}
+                    className="w-full text-xs p-3 rounded-xl border border-gray-300 bg-white"
+                  />
+                  <button
+                    type="submit"
+                    className="w-full bg-[#24402F] text-white text-xs font-bold py-3 rounded-xl shadow cursor-pointer"
+                  >
+                    Entrar al Panel
+                  </button>
+                </form>
+              ) : (
+                <div className="space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <h1 className="font-display text-xl font-bold flex items-center gap-2">
+                      <span>🛠️</span> Gestión de Productos
+                    </h1>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={addNewProduct}
+                        className="bg-[#24402F] text-white text-xs font-bold px-4 py-2 rounded-xl cursor-pointer"
+                      >
+                        + Nuevo Producto
+                      </button>
+                      <button
+                        onClick={restoreDefaultProducts}
+                        className="bg-gray-100 text-gray-700 text-xs font-bold px-4 py-2 rounded-xl cursor-pointer"
+                      >
+                        Restaurar Originales
+                      </button>
+                      <button
+                        onClick={handleAdminLogout}
+                        className="bg-red-50 text-red-600 text-xs font-bold px-4 py-2 rounded-xl cursor-pointer"
+                      >
+                        Cerrar Sesión
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {products.map((p) => (
+                      <div key={p.id} className="bg-slate-50 p-4 rounded-2xl border border-gray-200 flex flex-col md:flex-row items-center gap-4 justify-between">
+                        <div className="flex items-center gap-3 w-full md:w-auto">
+                          <span className="text-3xl bg-white p-2 rounded-xl shadow-sm">{p.icon}</span>
+                          <div className="space-y-1 w-full">
+                            <input
+                              type="text"
+                              value={p.name}
+                              onChange={(e) => updateProductField(p.id, 'name', e.target.value)}
+                              className="font-bold text-xs bg-white border border-gray-200 p-1 rounded w-full"
+                            />
+                            <input
+                              type="text"
+                              value={p.description}
+                              onChange={(e) => updateProductField(p.id, 'description', e.target.value)}
+                              className="text-xs text-gray-500 bg-white border border-gray-200 p-1 rounded w-full"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 w-full md:w-auto justify-end">
+                          <input
+                            type="number"
+                            value={p.price}
+                            onChange={(e) => updateProductField(p.id, 'price', Number(e.target.value))}
+                            className="text-xs font-bold bg-white border border-gray-200 p-1 rounded w-20 text-right"
+                          />
+                          <button
+                            onClick={() => deleteProduct(p.id)}
+                            className="bg-red-100 text-red-600 text-xs font-bold p-2 rounded-xl cursor-pointer"
+                          >
+                            🗑️
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </main>
       </div>
 
-      {/* FOOTER GENERAL */}
-      <footer className="bg-emerald-950 text-emerald-100 pt-10 pb-6 border-t border-emerald-900">
-        <div className="max-w-6xl mx-auto px-4 grid grid-cols-1 md:grid-cols-3 gap-8 mb-8 text-sm">
-          <div className="space-y-3">
-            <div className="flex items-center space-x-2">
-              <span className="text-2xl">🌿</span>
-              <span className="font-extrabold text-lg text-white">D' Y&C ORGANIC</span>
-            </div>
-            <p className="text-emerald-300/80 text-xs leading-relaxed">
-              Productos capilares y jabones artesanales elaborados con ingredientes 100% orgánicos para cuidar de ti y de los tuyos.
-            </p>
-          </div>
+      {/* CHATBOT INTEGRADO */}
+      <Chatbot />
 
+      {/* FOOTER */}
+      <footer className="bg-[#1C2B22] text-gray-400 text-xs py-8 border-t border-[#24402F]">
+        <div className="max-w-6xl mx-auto px-4 flex flex-col md:flex-row justify-between items-center gap-4 text-center md:text-left">
           <div>
-            <h4 className="font-bold text-white mb-3 text-xs uppercase tracking-wider">Contacto & Envíos</h4>
-            <ul className="space-y-2 text-xs text-emerald-200/90">
-              <li>📍 República Dominicana</li>
-              <li>💬 WhatsApp Directo para Pedidos</li>
-              <li>🚚 Envíos a todo el país</li>
-            </ul>
+            <p className="font-bold text-white text-sm">D' Y&C ORGANIC</p>
+            <p className="mt-1">Belleza natural y cuidado artesanal desde la República Dominicana 🌿</p>
           </div>
-
-          <div>
-            <h4 className="font-bold text-white mb-3 text-xs uppercase tracking-wider">Enlaces Rápidos</h4>
-            <div className="flex flex-col space-y-2 text-xs text-emerald-200/90">
-              <button onClick={() => setActiveTab('tienda')} className="hover:text-amber-400 text-left cursor-pointer">Tienda & Productos</button>
-              <button onClick={() => setActiveTab('nosotros')} className="hover:text-amber-400 text-left cursor-pointer">Preguntas Frecuentes</button>
-            </div>
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setActiveTab('admin')}
+              className="hover:text-white transition-colors cursor-pointer text-gray-500"
+            >
+              🔒 Panel Admin
+            </button>
+            <p>© {new Date().getFullYear()} Todos los derechos reservados.</p>
           </div>
         </div>
       </footer>
-
-      {/* Chatbot Flotante */}
-      <Chatbot />
     </div>
   );
 }
